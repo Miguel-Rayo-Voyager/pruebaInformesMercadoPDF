@@ -1,0 +1,21 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.db
+.ipynb_checkpoints
+.venv
+venv
+.vscode/
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# App specific exclusions
+app/doc-mig/
+Adicionales/
+dashboard/
+temp_report/
+web_report_demo/
