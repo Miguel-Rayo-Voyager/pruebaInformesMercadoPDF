@@ -1,33 +1,50 @@
 # Guía de Despliegue: Azure Container Apps con Docker
-**Proyecto:** InformePDF - Dashboard de Análisis de Mercado Educativo  
-**Framework:** Shiny for Python  
-**Plataforma:** Azure Container Apps (Compatible con Azure for Students)  
-**Método:** Docker + Azure Container Registry + GitHub Actions  
-**Región obligatoria:** Canada Central (política UNIMINUTO)
+
+**Proyecto:** InformePDF — Dashboard de Análisis de Mercado Educativo
+**Framework:** Shiny for Python
+**Plataforma:** Azure Container Apps (Azure for Students)
+**Método:** Docker + Azure Container Registry + GitHub Actions
+**Región:** Canada Central (política UNIMINUTO)
+**Estado actual:** Desplegado y funcionando ✅
 
 ---
 
-> [!IMPORTANT]
-> Esta guía asume que ya tienes:
-> - Docker instalado y funcionando en tu PC
-> - Azure CLI instalado (`az --version` para verificar)
-> - El proyecto subido en GitHub (`miguxldsymbiotic/PruebaInformesMERCADO`)
-> - Sesión activa en Azure con tu cuenta de estudiante
+## Estado de los recursos (confirmados)
+
+| Recurso | Nombre | Estado |
+|---|---|---|
+| Resource Group | `rg-informes-mercado` | ✅ Creado — Canada Central |
+| Container Registry | `informesmercadoacr` | ✅ Creado — Basic SKU, Admin user habilitado |
+| Container Apps Environment | `informes-env` | ✅ Creado — Canada Central, plan Consumption |
+| Container App | `informes-mercado-app` | ✅ Desplegado — puerto 7860, ingress externo |
+| URL pública | `https://informes-mercado-app.braveglacier-8d88d68b.canadacentral.azurecontainerapps.io/` | ✅ Activa |
+
+### Secretos en GitHub (`miguxldsymbiotic/PruebaInformesMERCADO`)
+
+| Secreto | Descripción |
+|---|---|
+| `AZURE_CLIENT_ID` | ID del Service Principal creado para GitHub Actions |
+| `AZURE_CLIENT_SECRET` | Contraseña del Service Principal |
+| `AZURE_SUBSCRIPTION_ID` | ID de la suscripción Azure for Students |
+| `AZURE_TENANT_ID` | ID del tenant de Azure AD (UNIMINUTO) |
+| `ACR_USERNAME` | Usuario Admin del Container Registry |
+| `ACR_PASSWORD` | Contraseña Admin del Container Registry |
 
 ---
 
 ## ¿Por qué Container Apps y no App Service?
 
-| Característica | App Service F1 | **Container Apps** |
+| Característica | App Service F1 | Container Apps |
 |---|---|---|
 | WeasyPrint | ❌ No funciona | ✅ Funciona |
 | Playwright + Chromium | ❌ No funciona | ✅ Funciona |
-| Typst | ❌ No funciona | ✅ Funciona |
 | Control del sistema operativo | ❌ Limitado | ✅ Total (Docker) |
-| Costo en Azure for Students | $0 (F1 fijo) | ~$0 con `min-replicas 0` |
-| Complejidad | Baja | Media |
+| Costo en Azure for Students | $0 fijo (pero sin PDF) | ~$0 con `min-replicas 0` |
+| Complejidad de configuración | Baja | Media |
 
-La clave del costo cero es `--min-replicas 0`: el contenedor **se apaga solo** cuando no hay visitas y **no consume créditos** en reposo.
+La clave del costo cero es `--min-replicas 0`: el contenedor **se apaga solo** cuando no hay
+visitas y **no consume créditos** en reposo. El único costo fijo es el Container Registry
+Basic (~$5 USD/mes del crédito de $100).
 
 ---
 
@@ -36,541 +53,358 @@ La clave del costo cero es `--min-replicas 0`: el contenedor **se apaga solo** c
 ```
 Tu PC (código)
      │
-     │ git push
+     │ git push → main
      ▼
-GitHub (repositorio)
+GitHub (miguxldsymbiotic/PruebaInformesMERCADO)
      │
-     │ GitHub Actions se activa
+     │ .github/workflows/deploy-container-apps.yml se activa
      ▼
-Azure Container Registry (ACR)
-     │  Almacena la imagen Docker
-     │
+GitHub Actions (ubuntu-latest)
+     │  1. Login a Azure con Service Principal
+     │  2. Login al ACR con Admin credentials
+     │  3. docker build + docker push → ACR
+     │  4. azure/container-apps-deploy-action actualiza la app
      ▼
-Azure Container Apps
-     │  Corre el contenedor con Shiny
+Azure Container Registry (informesmercadoacr.azurecr.io)
+     │  Almacena la imagen Docker tagueada con el SHA del commit
      ▼
-URL pública de tu app
+Azure Container Apps (informes-mercado-app)
+     │  Corre el contenedor con Shiny en el puerto 7860
+     ▼
+URL pública → https://informes-mercado-app.braveglacier-8d88d68b.canadacentral.azurecontainerapps.io/
 ```
 
 ---
 
-## FASE 0: Archivos que debes agregar al proyecto
-
-Antes de hacer cualquier cosa en Azure, asegúrate de tener estos archivos en la **raíz** de tu repositorio.
-
-### Estructura esperada
+## Estructura del proyecto
 
 ```
 PruebaInformesMERCADO/
+│
+├── Dockerfile                              ← Imagen de producción (ver abajo)
+├── .dockerignore                           ← Excluye archivos de desarrollo
+├── docker-compose.yml                      ← Solo para pruebas locales
+├── requirements.txt                        ← Dependencias Python (raíz del proyecto)
+├── requirements_deploy.txt                 ← Copia idéntica (legado, no usada en Docker)
+│
+├── .github/
+│   └── workflows/
+│       ├── deploy-container-apps.yml       ← Workflow activo de CI/CD
+│       ├── main_informepdf-free.yml.disabled    ← Deshabilitado (App Service legacy)
+│       ├── main_informepdf-shiny.yml.disabled   ← Deshabilitado (App Service legacy)
+│       └── main_informepdf-uniminuto.yml.disabled ← Deshabilitado (App Service legacy)
+│
 ├── app/
-│   └── app.py                  ← Punto de entrada Shiny
-├── data/                       ← Archivos .parquet y .xlsx
-├── requirements.txt            ← DEBE estar en la raíz
-├── Dockerfile                  ← Lo crearás en esta fase
-├── .dockerignore               ← Ya lo tienes, revisar abajo
-└── .github/
-    └── workflows/
-        └── deploy.yml          ← Lo crearás en la Fase 4
+│   ├── app.py                              ← Punto de entrada Shiny (6 854 líneas)
+│   ├── styles.css                          ← Estilos personalizados
+│   ├── logo_symbiotic.svg                  ← Logo SymbioTIC
+│   ├── Logo uniminuto H.png                ← Logo UNIMINUTO
+│   └── web_report_demo/
+│       ├── viewer.html                     ← Plantilla de vista previa del informe
+│       └── viewer_comp.html                ← Plantilla de informe comparativo
+│
+└── data/                                   ← Archivos de datos (incluidos en la imagen)
+    ├── df_SNIES_Programas.parquet
+    ├── df_Cobertura_distinct.parquet
+    ├── df_PCurso_agg.parquet
+    ├── df_Matricula_agg.parquet
+    ├── df_Graduados_agg.parquet
+    ├── df_OLE_Movilidad_M0.parquet
+    ├── df_OLE_Salario_M0.parquet
+    ├── df_OLE_Movilidad.parquet
+    ├── df_OLE_Salario.parquet
+    ├── df_SPADIES_Desercion.parquet
+    ├── df_SPADIES_Retencion.parquet
+    ├── df_SaberPRO.parquet                 ← 41 MB — el más grande
+    ├── df_SaberPRO_mean.parquet
+    ├── DIVIPOLA.xlsx
+    ├── SalarioMinimo.xlsx
+    └── inflacion_anual.xlsx
 ```
 
-### `requirements.txt` (en la raíz)
+---
 
-```txt
-faicons
-shiny
-plotly
-polars
-pyarrow
-pandas
-openpyxl
-jinja2
-weasyprint
-playwright
-kaleido
-ridgeplot
-```
+## Dockerfile (versión de producción)
 
-> [!NOTE]
-> `typst` no es un paquete pip — es un binario. Si lo usas con `subprocess`, se instala
-> directamente en el Dockerfile (ver Fase 0.2). Si lo usas de otra forma, ajusta según corresponda.
-
-### `Dockerfile` (en la raíz)
+Este es el Dockerfile activo. No modificar sin entender las razones de cada sección.
 
 ```dockerfile
-# Imagen base de Python 3.11 (slim para menor tamaño)
 FROM python:3.11-slim
 
-# ─────────────────────────────────────────────
-# DEPENDENCIAS DEL SISTEMA
-# Necesarias para WeasyPrint, Playwright y Typst
-# ─────────────────────────────────────────────
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    # WeasyPrint (renderizado PDF con CSS)
-    libpango-1.0-0 \
+ENV PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+
+# Layer 1: Python packages
+# Copy requirements first so Docker can cache this layer independently of app code.
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Layer 2: OS-level libraries
+# playwright install-deps resolves the correct Chromium library list for the
+# current Debian release automatically — handles Bookworm's libasound2 rename.
+# The three extra packages cover WeasyPrint font rendering (not in Playwright's list).
+RUN apt-get update \
+ && python -m playwright install-deps chromium \
+ && apt-get install -y --no-install-recommends \
     libpangoft2-1.0-0 \
-    libpangocairo-1.0-0 \
-    libgdk-pixbuf2.0-0 \
-    libffi-dev \
     shared-mime-info \
-    libcairo2 \
-    libcairo-gobject2 \
-    # Playwright / Chromium
-    libnss3 \
-    libnspr4 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libdbus-1-3 \
-    libxkbcommon0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
-    libxshmfence1 \
-    libx11-6 \
-    libx11-xcb1 \
-    libxcb1 \
-    libxext6 \
-    # Fuentes (necesarias para PDF)
     fonts-liberation \
-    fonts-dejavu-core \
-    # Utilidades generales
-    curl \
-    wget \
-    && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/*
 
-# ─────────────────────────────────────────────
-# TYPST (binario del sistema)
-# Descarga la versión más reciente de Typst
-# ─────────────────────────────────────────────
-RUN curl -L https://github.com/typst/typst/releases/download/v0.11.1/typst-x86_64-unknown-linux-musl.tar.xz \
-    | tar -xJ --strip-components=1 -C /usr/local/bin/ typst-x86_64-unknown-linux-musl/typst \
-    && chmod +x /usr/local/bin/typst
+# Layer 3: Chromium browser binary
+# Installed to /opt/ms-playwright as root, then made world-readable/executable
+# so the non-root runtime user can access it.
+RUN python -m playwright install chromium \
+ && chmod -R o+rX /opt/ms-playwright
 
-# ─────────────────────────────────────────────
-# DIRECTORIO DE TRABAJO
-# ─────────────────────────────────────────────
-WORKDIR /app
+# Runtime: non-root user (UID 1000)
+RUN useradd -m -u 1000 user
+USER user
+ENV HOME=/home/user \
+    PATH=/home/user/.local/bin:$PATH
 
-# ─────────────────────────────────────────────
-# DEPENDENCIAS PYTHON
-# Se copian primero para aprovechar el caché de Docker
-# Si requirements.txt no cambia, esta capa no se reconstruye
-# ─────────────────────────────────────────────
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+WORKDIR $HOME/app
+COPY --chown=user . .
 
-# ─────────────────────────────────────────────
-# PLAYWRIGHT + CHROMIUM
-# Se instala DESPUÉS de pip para no invalidar el caché de pip
-# ─────────────────────────────────────────────
-RUN playwright install chromium \
-    && playwright install-deps chromium
-
-# ─────────────────────────────────────────────
-# CÓDIGO DEL PROYECTO
-# Se copia al final para que los cambios de código
-# no re-instalen dependencias innecesariamente
-# ─────────────────────────────────────────────
-COPY . .
-
-# Puerto que expone Shiny
-EXPOSE 8000
-
-# ─────────────────────────────────────────────
-# COMANDO DE INICIO
-# Ajusta 'app/app.py' a la ruta real de tu archivo principal
-# ─────────────────────────────────────────────
-CMD ["python", "-m", "shiny", "run", "app/app.py", \
-     "--host", "0.0.0.0", "--port", "8000"]
+EXPOSE 7860
+CMD ["python", "-m", "shiny", "run", "app/app.py", "--host", "0.0.0.0", "--port", "7860"]
 ```
 
-> [!WARNING]
-> **Verifica la ruta `app/app.py`** — si tu archivo principal está en otra ubicación
-> (ej: `app.py` en la raíz), cámbiala en el CMD del Dockerfile.
+### Decisiones de diseño importantes
 
-### `.dockerignore` (revisar el tuyo)
-
-Tu `.dockerignore` actual está bien. Solo verifica que las carpetas de datos **no estén excluidas**. El tuyo excluye correctamente solo cosas de desarrollo:
-
-```dockerignore
-.git
-.gitignore
-__pycache__
-*.pyc
-*.pyo
-*.pyd
-.db
-.ipynb_checkpoints
-.venv
-venv
-.vscode/
-Dockerfile
-docker-compose.yml
-.dockerignore
-
-# App specific — SOLO si no contienen datos necesarios en producción
-app/doc-mig/
-Adicionales/
-dashboard/
-temp_report/
-web_report_demo/
-```
-
-> [!CAUTION]
-> Si `Adicionales/`, `dashboard/` o alguna de esas carpetas contienen archivos `.parquet`
-> o `.xlsx` que la app necesita en tiempo de ejecución, **quítalas del `.dockerignore`**.
-> De lo contrario, la app arrancará pero no encontrará los datos.
-
----
-
-## FASE 1: Probar Docker localmente
-
-Antes de subir nada a Azure, confirma que el contenedor funciona en tu PC.
-
-```bash
-# Desde la raíz del proyecto
-docker build -t informepdf-local .
-
-# Ejecutar el contenedor
-docker run -p 8000:8000 informepdf-local
-```
-
-Abre tu navegador en `http://localhost:8000`. Si la app carga correctamente, el Docker está listo.
-
-**Si hay errores comunes:**
-
-| Error | Causa | Solución |
-|---|---|---|
-| `ModuleNotFoundError` | Falta una dependencia en requirements.txt | Agrégala y reconstruye |
-| `FileNotFoundError` en datos | Carpeta de datos excluida en .dockerignore | Quitar esa carpeta del .dockerignore |
-| Puerto ya en uso | Otro proceso usa el 8000 | Cambia `-p 8001:8000` y abre `localhost:8001` |
-
----
-
-## FASE 2: Crear recursos en Azure
-
-Abre una terminal con Azure CLI y ejecuta los siguientes comandos **en orden**.
-
-### 2.1 — Iniciar sesión
-
-```bash
-az login
-```
-
-Selecciona tu cuenta de estudiante de UNIMINUTO cuando aparezca el navegador.
-
-### 2.2 — Seleccionar la suscripción correcta
-
-```bash
-# Ver todas las suscripciones disponibles
-az account list --output table
-
-# Seleccionar Azure for Students
-az account set --subscription "Azure for Students"
-```
-
-### 2.3 — Crear el Grupo de Recursos
-
-```bash
-az group create \
-  --name rg-informepdf \
-  --location canadacentral
-```
-
-> [!NOTE]
-> Usamos `canadacentral` (sin espacio, en minúsculas) porque es la única región
-> permitida por la política de UNIMINUTO.
-
-### 2.4 — Crear el Azure Container Registry (ACR)
-
-El ACR es el almacén privado donde se guarda tu imagen Docker.
-
-```bash
-az acr create \
-  --resource-group rg-informepdf \
-  --name informepdfregistry \
-  --sku Basic \
-  --location canadacentral
-```
-
-> [!NOTE]
-> El nombre `informepdfregistry` debe ser único en todo Azure. Si da error de nombre
-> duplicado, prueba con `informepdfuniminuto` o agrega tus iniciales.
-
-```bash
-# Habilitar acceso con usuario y contraseña (necesario para GitHub Actions)
-az acr update \
-  --name informepdfregistry \
-  --admin-enabled true
-```
-
-### 2.5 — Crear el entorno de Container Apps
-
-```bash
-az containerapp env create \
-  --name env-informepdf \
-  --resource-group rg-informepdf \
-  --location canadacentral
-```
-
-Este comando tarda 3-5 minutos. Espera a que termine antes de continuar.
-
----
-
-## FASE 3: Primera subida manual de la imagen
-
-Para verificar que todo funciona antes de configurar el CI/CD automático, sube la imagen manualmente una vez.
-
-```bash
-# Login al registry de Azure desde Docker
-az acr login --name informepdfregistry
-
-# Construir la imagen con el tag correcto para Azure
-# (Azure ACR Build construye en la nube, sin consumir tu internet local para subir)
-az acr build \
-  --registry informepdfregistry \
-  --image informepdf-app:latest \
-  --location canadacentral \
-  .
-```
-
-> [!TIP]
-> El comando `az acr build` sube el código fuente a Azure y construye la imagen allá.
-> Esto es mucho más rápido que hacer `docker build` local y luego `docker push`, porque
-> evita subir los ~300MB de Chromium desde Colombia.
-
-### 3.1 — Crear el Container App
-
-```bash
-# Obtener credenciales del registry
-ACR_SERVER=$(az acr show --name informepdfregistry --query loginServer -o tsv)
-ACR_USER=$(az acr credential show --name informepdfregistry --query username -o tsv)
-ACR_PASS=$(az acr credential show --name informepdfregistry --query "passwords[0].value" -o tsv)
-
-# Crear el Container App
-az containerapp create \
-  --name informepdf-app \
-  --resource-group rg-informepdf \
-  --environment env-informepdf \
-  --image informepdfregistry.azurecr.io/informepdf-app:latest \
-  --registry-server informepdfregistry.azurecr.io \
-  --registry-username $ACR_USER \
-  --registry-password $ACR_PASS \
-  --target-port 8000 \
-  --ingress external \
-  --cpu 1.0 \
-  --memory 2.0Gi \
-  --min-replicas 0 \
-  --max-replicas 1
-```
-
-### 3.2 — Obtener la URL pública
-
-```bash
-az containerapp show \
-  --name informepdf-app \
-  --resource-group rg-informepdf \
-  --query properties.configuration.ingress.fqdn \
-  -o tsv
-```
-
-Copia esa URL y ábrela en el navegador. Debería verse tu app de Shiny. 🎉
-
----
-
-## FASE 4: Automatización con GitHub Actions (CI/CD)
-
-Una vez que la app funciona manualmente, configura el despliegue automático para que cada `git push` actualice la app sola.
-
-### 4.1 — Obtener credenciales para GitHub
-
-```bash
-# Credenciales del ACR
-az acr credential show --name informepdfregistry
-```
-
-Guarda el `username` y el primer `password` — los necesitarás en el siguiente paso.
-
-### 4.2 — Agregar secretos en GitHub
-
-Ve a tu repositorio en GitHub → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**.
-
-Agrega estos tres secretos:
-
-| Nombre del secreto | Valor |
+| Decisión | Razón |
 |---|---|
-| `REGISTRY_USERNAME` | El username del ACR (del paso anterior) |
-| `REGISTRY_PASSWORD` | El password del ACR (del paso anterior) |
-| `AZURE_CREDENTIALS` | Ver instrucciones abajo |
+| `playwright install-deps` se ejecuta como root | Necesita llamar a `apt-get`. Después de `USER user` ya no tendría permisos. |
+| `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` | Instala Chromium en una ruta del sistema, no en el home de root, para que el usuario no-root pueda usarlo. |
+| `chmod -R o+rX /opt/ms-playwright` | Da permisos de lectura/ejecución al usuario no-root sobre el binario de Chromium. |
+| `libpangoft2-1.0-0` agregado manualmente | WeasyPrint necesita este módulo de fuentes de Pango; `playwright install-deps` no lo instala. |
+| `libasound2` eliminado | Fue renombrado a `libasound2t64` en Debian Bookworm. `playwright install-deps` instala el nombre correcto automáticamente. |
+| `requirements.txt` copiado a `/tmp/` primero | Docker reutiliza el caché de pip si `requirements.txt` no cambió, aunque el código sí cambie. Esto ahorra 5-8 minutos en cada rebuild. |
+| Usuario no-root (UID 1000) | Buena práctica de seguridad en contenedores. |
+| Puerto 7860 | Estándar de Hugging Face Spaces; el Container App está configurado para aceptar este puerto. |
 
-**Para `AZURE_CREDENTIALS`**, ejecuta esto en Azure CLI:
+---
 
-```bash
-az ad sp create-for-rbac \
-  --name "sp-informepdf-github" \
-  --role contributor \
-  --scopes /subscriptions/$(az account show --query id -o tsv)/resourceGroups/rg-informepdf \
-  --sdk-auth
-```
+## Workflow de GitHub Actions
 
-Copia el JSON completo que devuelve y pégalo como valor del secreto `AZURE_CREDENTIALS`.
-
-### 4.3 — Crear el workflow de GitHub Actions
-
-Crea el archivo `.github/workflows/deploy.yml` en tu repositorio con este contenido:
+Archivo: `.github/workflows/deploy-container-apps.yml`
 
 ```yaml
 name: Build and Deploy to Azure Container Apps
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+  workflow_dispatch:
 
 env:
-  REGISTRY: informepdfregistry.azurecr.io
-  IMAGE_NAME: informepdf-app
-  RESOURCE_GROUP: rg-informepdf
-  CONTAINER_APP_NAME: informepdf-app
+  REGISTRY_NAME: informesmercadoacr
+  REGISTRY_LOGIN_SERVER: informesmercadoacr.azurecr.io
+  RESOURCE_GROUP: rg-informes-mercado
+  CONTAINER_APP_NAME: informes-mercado-app
+  IMAGE_NAME: informes-mercado
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-
     steps:
-      # 1. Checkout del código
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # 2. Login a Azure
-      - name: Login to Azure
+      - name: Log in to Azure
         uses: azure/login@v1
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
 
-      # 3. Login al Azure Container Registry
-      - name: Login to Azure Container Registry
-        uses: azure/docker-login@v1
+      - name: Log in to ACR
+        uses: docker/login-action@v3
         with:
-          login-server: ${{ env.REGISTRY }}
-          username: ${{ secrets.REGISTRY_USERNAME }}
-          password: ${{ secrets.REGISTRY_PASSWORD }}
+          registry: ${{ env.REGISTRY_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
 
-      # 4. Build y Push de la imagen Docker
       - name: Build and push Docker image
-        run: |
-          az acr build \
-            --registry informepdfregistry \
-            --image ${{ env.IMAGE_NAME }}:${{ github.sha }} \
-            --image ${{ env.IMAGE_NAME }}:latest \
-            .
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ env.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
 
-      # 5. Actualizar el Container App con la nueva imagen
       - name: Deploy to Azure Container Apps
-        run: |
-          az containerapp update \
-            --name ${{ env.CONTAINER_APP_NAME }} \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        uses: azure/container-apps-deploy-action@v1
+        with:
+          resourceGroup: ${{ env.RESOURCE_GROUP }}
+          containerAppName: ${{ env.CONTAINER_APP_NAME }}
+          imageToDeploy: ${{ env.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          targetPort: 7860
 ```
 
-### 4.4 — Hacer el primer push automático
+### Notas sobre el workflow
+
+- `azure/login@v1` (no v2) — La v2 eliminó el soporte para JSON como credencial.
+  El JSON se construye en línea a partir de los cuatro secretos individuales.
+- Cada imagen se taguea con el SHA del commit, no con `latest`.
+  Esto permite trazabilidad y rollback a cualquier versión anterior.
+- `workflow_dispatch` permite ejecutar el workflow manualmente desde la pestaña Actions sin necesidad de hacer un push.
+
+---
+
+## Flujo de trabajo cotidiano
+
+Cada vez que hagas un cambio en el código:
 
 ```bash
 git add .
-git commit -m "feat: configurar CI/CD con Azure Container Apps"
+git commit -m "descripción del cambio"
 git push origin main
 ```
 
-Ve a la pestaña **Actions** en GitHub y verás el workflow ejecutándose. En 5-10 minutos estará desplegado.
+GitHub Actions detecta el push y ejecuta automáticamente:
+
+1. Login a Azure y al ACR
+2. `docker build` de la imagen (~5-10 min la primera vez, ~3-5 min con caché)
+3. `docker push` al registry
+4. Actualización del Container App con la nueva imagen
+
+En total: **8-12 minutos** desde el push hasta que la URL pública sirve la nueva versión.
 
 ---
 
-## FASE 5: Flujo de trabajo futuro
+## Resolución de paths dentro del contenedor
+
+La app calcula sus rutas relativas a la ubicación de `app.py`:
+
+```python
+app_dir  = Path(__file__).parent       # → /home/user/app/app/
+data_dir = app_dir.parent / "data"    # → /home/user/app/data/
+```
+
+Esto se traduce en la siguiente estructura dentro del contenedor:
 
 ```
-1. Modificas el código en tu PC
-2. git add .
-3. git commit -m "descripción del cambio"
-4. git push origin main
-5. GitHub Actions detecta el push
-6. Construye la nueva imagen en ACR (~3-5 min)
-7. Actualiza el Container App automáticamente
-8. En ~8-10 minutos, la web tiene los cambios
+/home/user/app/                        ← WORKDIR
+├── app/
+│   ├── app.py                         ← app_dir = aquí
+│   ├── styles.css
+│   ├── logo_symbiotic.svg
+│   └── web_report_demo/
+│       ├── viewer.html
+│       └── viewer_comp.html
+└── data/                              ← data_dir = aquí
+    ├── *.parquet
+    └── *.xlsx
 ```
 
 ---
 
-## Consideraciones de costo con Azure for Students
+## Costos con Azure for Students
 
-| Recurso | Costo |
+| Recurso | Costo mensual aproximado |
 |---|---|
-| Container Registry (Basic) | ~$0.17 USD/día (~$5/mes) — consume crédito estudiante |
-| Container Apps con `min-replicas 0` | $0 cuando no hay tráfico |
-| Container Apps con tráfico | Muy bajo, fracciones de centavo por solicitud |
+| Container Registry Basic | ~$5 USD (cargado al crédito de $100) |
+| Container Apps — sin tráfico (`min-replicas 0`) | $0 |
+| Container Apps — con tráfico activo | Fracciones de centavo por hora de uso |
+| **Total en uso normal (baja frecuencia)** | **~$5 USD/mes** |
 
-> [!NOTE]
-> El Container Registry Basic cuesta ~$5/mes de tu crédito de $100. Es el único costo fijo.
-> Si quieres eliminarlo después de configurar todo, puedes hacer el build manualmente cuando
-> necesites actualizar, o buscar alternativas como GitHub Container Registry (ghcr.io) que es gratis.
+> El crédito de Azure for Students es de $100 USD. Con el único costo fijo de $5/mes
+> del registry, el crédito dura aproximadamente 20 meses.
 
 ---
 
-## Troubleshooting: Problemas comunes
+## Troubleshooting
 
-### La app no inicia (Application Error)
+### Ver logs del contenedor en tiempo real
+
+Desde Azure Cloud Shell:
 
 ```bash
-# Ver los logs del contenedor en tiempo real
 az containerapp logs show \
-  --name informepdf-app \
-  --resource-group rg-informepdf \
+  --name informes-mercado-app \
+  --resource-group rg-informes-mercado \
   --follow
 ```
 
-### La app inicia pero los datos no cargan
-
-Verifica que las carpetas con `.parquet` y `.xlsx` **no están** en el `.dockerignore`.
-Reconstruye la imagen después de corregirlo.
-
-### Playwright da error en producción
+### La app no inicia (Application Error o pantalla en blanco)
 
 ```bash
-# Verifica que el Chromium quedó instalado en la imagen
-docker run --rm informepdfregistry.azurecr.io/informepdf-app:latest \
-  python -c "from playwright.sync_api import sync_playwright; print('OK')"
+# Ver los últimos 50 registros
+az containerapp logs show \
+  --name informes-mercado-app \
+  --resource-group rg-informes-mercado \
+  --tail 50
 ```
 
-### Error de región bloqueada por política
+Causas comunes:
+- Un paquete faltante en `requirements.txt` — agrégalo y haz push
+- Un archivo de datos que la app intenta leer al arrancar no existe en `data/` — verifica que no esté en `.dockerignore`
 
-Si algún comando da `RequestDisallowedByPolicy`, verifica que estás usando `canadacentral`
-(sin espacio, todo en minúsculas).
+### La generación de PDF falla en producción
 
-### El Container App "duerme" y la primera carga es lenta
+Verifica que Chromium fue instalado correctamente en la imagen:
 
-Es normal con `min-replicas 0`. El primer request tarda 30-60 segundos en "despertar"
-el contenedor. Las cargas siguientes son normales. Esto es el tradeoff del costo cero.
+```bash
+# En Cloud Shell, usando una imagen ya en el registry:
+az acr run \
+  --registry informesmercadoacr \
+  --cmd "python -c \"from playwright.sync_api import sync_playwright; print('Playwright OK')\"" \
+  /dev/null
+```
+
+### El workflow falla en el paso "Log in to Azure"
+
+Verifica que los cuatro secretos del Service Principal estén correctamente copiados en GitHub:
+`AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`.
+Los valores son los que devolvió `az ad sp create-for-rbac` al crear el Service Principal.
+
+### El workflow falla en el paso "Build and push Docker image"
+
+Verifica que `ACR_USERNAME` y `ACR_PASSWORD` coincidan exactamente con los valores
+en Azure Portal → `informesmercadoacr` → Access keys.
+
+### Primera carga lenta (30-60 segundos)
+
+Comportamiento normal con `min-replicas 0`. El contenedor está apagado cuando no hay
+tráfico y tarda ese tiempo en encenderse al recibir la primera solicitud. Las cargas
+siguientes son inmediatas mientras el contenedor permanezca activo.
+
+### Error de región bloqueada por política de UNIMINUTO
+
+Si algún comando CLI da `RequestDisallowedByPolicy`, verifica que estés usando
+`canadacentral` (sin espacios, todo en minúsculas). Todos los recursos de este proyecto
+están en esa región.
 
 ---
 
-## Resumen de comandos esenciales
+## Comandos de referencia rápida
+
+Todos ejecutables desde **Azure Cloud Shell** (icono `>_` en la barra del portal).
 
 ```bash
-# Ver estado de la app
-az containerapp show --name informepdf-app --resource-group rg-informepdf
+# Ver el estado general del Container App
+az containerapp show \
+  --name informes-mercado-app \
+  --resource-group rg-informes-mercado \
+  --query "{estado:properties.runningStatus, replicas:properties.template.scale, url:properties.configuration.ingress.fqdn}" \
+  -o table
 
-# Ver logs en vivo
-az containerapp logs show --name informepdf-app --resource-group rg-informepdf --follow
+# Ver logs en tiempo real
+az containerapp logs show \
+  --name informes-mercado-app \
+  --resource-group rg-informes-mercado \
+  --follow
 
-# Actualizar manualmente (sin CI/CD)
-az acr build --registry informepdfregistry --image informepdf-app:latest . && \
-az containerapp update --name informepdf-app --resource-group rg-informepdf \
-  --image informepdfregistry.azurecr.io/informepdf-app:latest
+# Forzar un redespliegue con la última imagen del registry (sin cambios en el código)
+az containerapp update \
+  --name informes-mercado-app \
+  --resource-group rg-informes-mercado \
+  --image informesmercadoacr.azurecr.io/informes-mercado:latest
 
-# Eliminar todos los recursos (¡precaución!)
-az group delete --name rg-informepdf --yes
+# Listar todas las imágenes almacenadas en el registry
+az acr repository show-tags \
+  --name informesmercadoacr \
+  --repository informes-mercado \
+  --orderby time_desc \
+  --output table
+
+# Eliminar todos los recursos del proyecto (¡irreversible!)
+az group delete --name rg-informes-mercado --yes --no-wait
 ```

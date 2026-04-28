@@ -11,18 +11,6 @@ import base64
 import io
 import numpy as np
 from jinja2 import Template
-import os
-import sys
-
-# Configuración de librerías GTK para WeasyPrint en Windows
-if os.name == 'nt':
-    # Intentar agregar la ruta de MSYS2 UCRT64 al sistema de carga de DLLs
-    gtk_path = r"C:\msys64\ucrt64\bin"
-    if os.path.exists(gtk_path):
-        os.add_dll_directory(gtk_path)
-    # También asegurar que esté en el PATH para mayor compatibilidad
-    os.environ['PATH'] = gtk_path + os.pathsep + os.environ.get('PATH', '')
-
 from weasyprint import HTML
 from concurrent.futures import ThreadPoolExecutor
 
@@ -326,19 +314,8 @@ try:
         pl.col("NOMBRE_MPIO").alias("municipio")
     ])
     
-    # Global UX UI: Acortar nombre de San Andrés
-    long_name = "ARCHIPIELAGO DE SAN ANDRES, PROVIDENCIA Y SANTA CATALINA"
-    short_name = "SAN ANDRES ISLAS"
-    df_divi = df_divi.with_columns(
-        pl.col("departamento").replace(long_name, short_name)
-    )
-    
     # Origen
     df_ole_m0 = df_ole_m0.join(
-        df_divi.rename({"departamento": "departamento_origen", "municipio": "municipio_origen"}), 
-        left_on="divipola_mpio_principal", right_on="DIVIPOLA_MPIO", how="left"
-    )
-    df_ole_salario = df_ole_salario.join(
         df_divi.rename({"departamento": "departamento_origen", "municipio": "municipio_origen"}), 
         left_on="divipola_mpio_principal", right_on="DIVIPOLA_MPIO", how="left"
     )
@@ -347,19 +324,9 @@ try:
         df_divi.rename({"departamento": "departamento_destino", "municipio": "municipio_destino"}), 
         left_on="divipola_mpio_destino", right_on="DIVIPOLA_MPIO", how="left"
     )
-    df_ole_salario = df_ole_salario.join(
-        df_divi.rename({"departamento": "departamento_destino", "municipio": "municipio_destino"}), 
-        left_on="divipola_mpio_destino", right_on="DIVIPOLA_MPIO", how="left"
-    )
     
     # Si algún divipola no cruza, fallback a string genérico
     df_ole_m0 = df_ole_m0.with_columns([
-        pl.col("departamento_origen").fill_null(pl.col("divipola_mpio_principal").cast(pl.Utf8)),
-        pl.col("departamento_destino").fill_null(pl.col("divipola_mpio_destino").cast(pl.Utf8)),
-        pl.col("municipio_origen").fill_null(pl.col("divipola_mpio_principal").cast(pl.Utf8)),
-        pl.col("municipio_destino").fill_null(pl.col("divipola_mpio_destino").cast(pl.Utf8))
-    ])
-    df_ole_salario = df_ole_salario.with_columns([
         pl.col("departamento_origen").fill_null(pl.col("divipola_mpio_principal").cast(pl.Utf8)),
         pl.col("departamento_destino").fill_null(pl.col("divipola_mpio_destino").cast(pl.Utf8)),
         pl.col("municipio_origen").fill_null(pl.col("divipola_mpio_principal").cast(pl.Utf8)),
@@ -523,24 +490,6 @@ app_ui = ui.page_sidebar(
     ),
         ui.nav_panel(
             "Observatorio Laboral",
-            ui.layout_columns(
-                ui.value_box(
-                    f"Graduados OLE ({max_anno_ole})", 
-                    ui.output_ui("kpi_ole_graduados"), 
-                    showcase=fa.icon_svg("user-graduate", "solid")
-                ),
-                ui.value_box(
-                    f"Graduados que Cotizan ({max_anno_ole})", 
-                    ui.output_ui("kpi_ole_cotizan"), 
-                    showcase=fa.icon_svg("hand-holding-dollar", "solid")
-                ),
-                ui.value_box(
-                    f"Cotizantes Dependientes ({max_anno_ole})", 
-                    ui.output_ui("kpi_ole_dependientes"), 
-                    showcase=fa.icon_svg("building-user", "solid")
-                ),
-                fill=False, class_="mb-1"
-            ),
             ui.layout_columns(
                 ui.value_box(
                     f"Empleabilidad ({max_anno_ole})", 
@@ -1676,33 +1625,6 @@ def server(input, output, session):
         return df
 
     @reactive.calc
-    def filtered_snies_ole():
-        """Lógica especial para OLE: Filtra por Departamento Principal en lugar de Cobertura."""
-        df = df_snies
-        f_vals = isolated_filters()
-        
-        # Filtros estándar (Institución, Nivel, etc.)
-        for col in filtros_cols:
-            val = f_vals[col]
-            if is_filtered(val): 
-                df = df.filter(pl.col(col).is_in(val))
-        
-        # Filtro por palabras clave
-        df = _apply_keyword_filter(df, f_vals.get("keyword_programa", ""))
-
-        # Filtro de Departamento Principal (Sidebar filter used on a different column)
-        dept = f_vals["departamento"]
-        mpio = f_vals["municipio"]
-        
-        if is_filtered(dept):
-            df = df.filter(pl.col("departamento_principal").is_in(dept))
-        
-        if is_filtered(mpio):
-            df = df.filter(pl.col("municipio_principal").is_in(mpio))
-            
-        return df
-
-    @reactive.calc
     def filtered_snies():
         df = df_snies
         f_vals = isolated_filters()
@@ -1714,7 +1636,7 @@ def server(input, output, session):
         
         # Filtro por palabras clave sobre programa_academico (AND)
         df = _apply_keyword_filter(df, f_vals.get("keyword_programa", ""))
-
+        
         # Filtro de Cobertura Geográfica
         dept = f_vals["departamento"]
         mpio = f_vals["municipio"]
@@ -1730,20 +1652,10 @@ def server(input, output, session):
             has_geo = True
             
         if has_geo:
-            snies_geo = df_cob["codigo_snies_del_programa"].unique()
-            df = df.filter(pl.col("codigo_snies_del_programa").is_in(snies_geo))
-
+            valid_snies_in_geo = df_cob["codigo_snies_del_programa"].unique()
+            df = df.filter(pl.col("codigo_snies_del_programa").is_in(valid_snies_in_geo))
+            
         return df
-
-    @reactive.calc
-    def filtered_ole_m0():
-        # Retornamos la base completa para que sea filtrada por SNIES en los cálculos individuales.
-        # Esto evita que el filtro de Departamento de Oferta (SNIES) choque con el Departamento de Origen (OLE).
-        return df_ole_m0
-
-    @reactive.calc
-    def filtered_ole_salario():
-        return df_ole_salario
 
     @reactive.calc
     def valid_divipolas():
@@ -1765,88 +1677,41 @@ def server(input, output, session):
         
         return cobertura_filtered["snies_divipola"].unique()
 
-
     @reactive.calc
     def calc_kpi_empleabilidad():
-        fs = filtered_snies_ole()
+        fs = filtered_snies()
         snies_codigos = fs["codigo_snies_del_programa"].unique()
         if len(snies_codigos) == 0: return "Sin dato"
-        
-        # Usar el año máximo global de la base OLE
-        ole_filtered = filtered_ole_m0().filter(
-            pl.col("codigo_snies_del_programa").is_in(snies_codigos) & 
-            (pl.col("anno_corte") == max_anno_ole)
-        )
+        max_anno_corte = df_ole_m0["anno_corte"].max()
+        ole_filtered = df_ole_m0.filter(pl.col("codigo_snies_del_programa").is_in(snies_codigos) & (pl.col("anno_corte") == max_anno_corte))
         if len(ole_filtered) == 0: return "Sin dato"
-        
-        # Lógica de ratio sobre totales
-        total_grad = ole_filtered["graduados"].sum()
-        total_cotiz = ole_filtered["graduados_que_cotizan"].sum()
-        
-        if total_grad == 0: return "0%"
-        return format_pct_es(total_cotiz / total_grad)
+        df_snies_agg = ole_filtered.group_by("codigo_snies_del_programa").agg([pl.col("graduados_que_cotizan").sum().alias("cotizan"), pl.col("graduados").sum().alias("total")])
+        df_snies_agg = df_snies_agg.filter(pl.col("total") > 0)
+        if len(df_snies_agg) == 0: return "0%"
+        df_snies_agg = df_snies_agg.with_columns((pl.col("cotizan") / pl.col("total")).alias("tasa_programa"))
+        promedio_empleabilidad = df_snies_agg["tasa_programa"].mean()
+        if promedio_empleabilidad is None: return "0,0%"
+        return format_pct_es(promedio_empleabilidad)
 
     @render.ui
     def kpi_empleabilidad():
         return ui.HTML(f"<div style='font-size: 48px; font-weight: bold; color: #31497e;'>{calc_kpi_empleabilidad()}</div>")
 
     @reactive.calc
-    def calc_ole_base_data():
-        fs = filtered_snies_ole()
-        snies_codigos = fs["codigo_snies_del_programa"].unique()
-        if len(snies_codigos) == 0: return None
-        
-        # Usar el año máximo global de la base OLE
-        ole_filtered = filtered_ole_m0().filter(
-            pl.col("codigo_snies_del_programa").is_in(snies_codigos) & 
-            (pl.col("anno_corte") == max_anno_ole)
-        )
-        
-        if len(ole_filtered) == 0: return None
-        
-        return ole_filtered.select([
-            pl.col("graduados").sum().alias("graduados"),
-            pl.col("graduados_que_cotizan").sum().alias("que_cotizan"),
-            pl.col("graduados_cotizantes_dependientes").sum().alias("dependientes")
-        ]).to_dict(as_series=False)
-
-    @render.ui
-    def kpi_ole_graduados():
-        data = calc_ole_base_data()
-        val = data["graduados"][0] if data else 0
-        return ui.HTML(f"<div style='font-size: 48px; font-weight: bold; color: #31497e;'>{format_num_es(val)}</div>")
-
-    @render.ui
-    def kpi_ole_cotizan():
-        data = calc_ole_base_data()
-        val = data["que_cotizan"][0] if data else 0
-        return ui.HTML(f"<div style='font-size: 48px; font-weight: bold; color: #31497e;'>{format_num_es(val)}</div>")
-
-    @render.ui
-    def kpi_ole_dependientes():
-        data = calc_ole_base_data()
-        val = data["dependientes"][0] if data else 0
-        return ui.HTML(f"<div style='font-size: 48px; font-weight: bold; color: #31497e;'>{format_num_es(val)}</div>")
-
-    @reactive.calc
     def calc_kpi_cotizantes_dependientes():
-        fs = filtered_snies_ole()
+        fs = filtered_snies()
         snies_codigos = fs["codigo_snies_del_programa"].unique()
         if len(snies_codigos) == 0: return "0%"
-        
-        # Usar el año máximo global de la base OLE
-        ole_filtered = filtered_ole_m0().filter(
-            pl.col("codigo_snies_del_programa").is_in(snies_codigos) & 
-            (pl.col("anno_corte") == max_anno_ole)
-        )
+        max_anno_corte = df_ole_m0["anno_corte"].max()
+        ole_filtered = df_ole_m0.filter(pl.col("codigo_snies_del_programa").is_in(snies_codigos) & (pl.col("anno_corte") == max_anno_corte))
         if len(ole_filtered) == 0: return "0%"
-        
-        # Lógica de ratio sobre totales
-        total_cotiz = ole_filtered["graduados_que_cotizan"].sum()
-        total_dep = ole_filtered["graduados_cotizantes_dependientes"].sum()
-        
-        if total_cotiz == 0: return "0%"
-        return format_pct_es(total_dep / total_cotiz)
+        df_snies_agg = ole_filtered.group_by("codigo_snies_del_programa").agg([pl.col("graduados_cotizantes_dependientes").sum().alias("dependientes"), pl.col("graduados_que_cotizan").sum().alias("total_cotizan")])
+        df_snies_agg = df_snies_agg.filter(pl.col("total_cotizan") > 0)
+        if len(df_snies_agg) == 0: return "0%"
+        df_snies_agg = df_snies_agg.with_columns((pl.col("dependientes") / pl.col("total_cotizan")).alias("tasa_programa"))
+        promedio_dependientes = df_snies_agg["tasa_programa"].mean()
+        if promedio_dependientes is None: return "0,0%"
+        return format_pct_es(promedio_dependientes)
 
     @render.ui
     def kpi_cotizantes_dependientes():
@@ -1854,23 +1719,17 @@ def server(input, output, session):
 
     @reactive.calc
     def calc_kpi_dependientes_graduados():
-        fs = filtered_snies_ole()
+        fs = filtered_snies()
         snies_codigos = fs["codigo_snies_del_programa"].unique()
         if len(snies_codigos) == 0: return "0%"
-        
-        # Usar el año máximo global de la base OLE
-        ole_filtered = filtered_ole_m0().filter(
-            pl.col("codigo_snies_del_programa").is_in(snies_codigos) & 
-            (pl.col("anno_corte") == max_anno_ole)
-        )
+        max_anno_corte = df_ole_m0["anno_corte"].max()
+        ole_filtered = df_ole_m0.filter(pl.col("codigo_snies_del_programa").is_in(snies_codigos) & (pl.col("anno_corte") == max_anno_corte))
         if len(ole_filtered) == 0: return "0%"
-        
-        # Lógica de ratio sobre totales
-        total_grad = ole_filtered["graduados"].sum()
-        total_dep = ole_filtered["graduados_cotizantes_dependientes"].sum()
-        
-        if total_grad == 0: return "0%"
-        return format_pct_es(total_dep / total_grad)
+        df_snies_agg = ole_filtered.group_by("codigo_snies_del_programa").agg([pl.col("graduados_cotizantes_dependientes").sum().alias("dependientes"), pl.col("graduados").sum().alias("total_graduados")]).filter(pl.col("total_graduados") > 0)
+        if len(df_snies_agg) == 0: return "0%"
+        df_snies_agg = df_snies_agg.with_columns((pl.col("dependientes") / pl.col("total_graduados")).alias("tasa"))
+        promedio = df_snies_agg["tasa"].mean()
+        return format_pct_es(promedio) if promedio is not None else "0,0%"
 
     @render.ui
     def kpi_dependientes_graduados():
@@ -2099,35 +1958,33 @@ def server(input, output, session):
 
     def create_ole_trend_df(measure_numerator, measure_denominator, group_by_cols):
         import pandas as pd
-        fs = filtered_snies_ole()
+        fs = filtered_snies()
         snies_codigos = fs["codigo_snies_del_programa"].unique()
         
         if len(snies_codigos) == 0:
             return pd.DataFrame(columns=group_by_cols + ["tasa"])
             
-        ole_filtered = filtered_ole_m0().filter(
+        ole_filtered = df_ole_m0.filter(
             pl.col("codigo_snies_del_programa").is_in(snies_codigos) & 
-            (pl.col("anno_corte") >= 2018)
+            (pl.col("anno_corte") >= 2016)
         )
         if len(ole_filtered) == 0:
             return pd.DataFrame(columns=group_by_cols + ["tasa"])
             
-        # Determinar columnas de agrupación finales (quitando el SNIES si está)
-        final_group_cols = [c for c in group_by_cols if c != "codigo_snies_del_programa"]
-        if not final_group_cols:
-            final_group_cols = ["anno_corte"]
-        
-        # Agregación por los grupos finales: sumar numeradores y denominadores antes de dividir
-        res_df = ole_filtered.group_by(final_group_cols).agg([
+        agg_df = ole_filtered.group_by(group_by_cols).agg([
             pl.col(measure_numerator).sum().alias("num"),
             pl.col(measure_denominator).sum().alias("den")
         ])
         
-        res_df = res_df.filter(pl.col("den") > 0)
-        if len(res_df) == 0:
-            return pd.DataFrame(columns=final_group_cols + ["tasa"])
+        agg_df = agg_df.filter(pl.col("den") > 0)
+        if len(agg_df) == 0:
+            return pd.DataFrame(columns=group_by_cols + ["tasa"])
             
-        res_df = res_df.with_columns((pl.col("num") / pl.col("den")).alias("tasa")).sort(final_group_cols)
+        agg_df = agg_df.with_columns((pl.col("num") / pl.col("den")).alias("tasa"))
+        
+        final_group_cols = [c for c in group_by_cols if c != "codigo_snies_del_programa"]
+        
+        res_df = agg_df.group_by(final_group_cols).agg(pl.col("tasa").mean()).sort(final_group_cols)
         return res_df.to_pandas()
 
     @reactive.calc
@@ -2212,16 +2069,16 @@ def server(input, output, session):
 
     def get_ole_distribution_df(measure_numerator, measure_denominator, group_by_cols=["codigo_snies_del_programa"]):
         import pandas as pd
-        fs = filtered_snies_ole()
+        fs = filtered_snies()
         snies_codigos = fs["codigo_snies_del_programa"].unique()
         
         if len(snies_codigos) == 0:
             return pd.DataFrame()
             
-        # Usar el año máximo global de la base OLE
-        ole_filtered = filtered_ole_m0().filter(
+        max_anno_corte = df_ole_m0["anno_corte"].max()
+        ole_filtered = df_ole_m0.filter(
             pl.col("codigo_snies_del_programa").is_in(snies_codigos) & 
-            (pl.col("anno_corte") == max_anno_ole)
+            (pl.col("anno_corte") == max_anno_corte)
         )
         if len(ole_filtered) == 0:
             return pd.DataFrame()
@@ -2500,48 +2357,37 @@ def server(input, output, session):
     @reactive.calc
     def calc_mobility_yoy_data():
         import pandas as pd
-        fs = filtered_snies_no_geo()
+        fs = filtered_snies()
         snies_codigos = fs["codigo_snies_del_programa"].unique()
         if len(snies_codigos) == 0: return pd.DataFrame()
         
-        # Detección de nivel geográfico y selección
+        # Detección de nivel geográfico
         f_vals = isolated_filters()
-        dept_vals = list(f_vals["departamento"] or [])
-        mpio_vals = list(f_vals["municipio"] or [])
-        
-        if is_filtered(mpio_vals):
-            col_orig, col_dest, label_ejes, geo_sel = "municipio_origen", "municipio_destino", "Municipio", mpio_vals
+        mpio_filtro = f_vals["municipio"]
+        if hasattr(mpio_filtro, '__iter__') and len(mpio_filtro) > 0 and mpio_filtro[0]:
+            col_orig, col_dest, label_ejes = "municipio_origen", "municipio_destino", "Municipio"
         else:
-            col_orig, col_dest, label_ejes, geo_sel = "departamento_origen", "departamento_destino", "Departamento", dept_vals
+            col_orig, col_dest, label_ejes = "departamento_origen", "departamento_destino", "Departamento"
             
-        def normalize_pl(col):
-            return col.str.to_uppercase().str.replace_all(r"[\.,]", "").str.replace_all(r"\s+", " ").str.strip_chars()
+        def normalize_str(s):
+            return str(s).upper().replace(".", "").replace(",", "").replace("  ", " ").strip()
 
-        # 1. Base Nacional del perfil SNIES
-        df_base = df_ole_m0.filter(
-            pl.col("codigo_snies_del_programa").is_in(snies_codigos) & 
+        seleccionados = list(f_vals["municipio"] or []) if label_ejes == "Municipio" else list(f_vals["departamento"] or [])
+        sel_norm = [normalize_str(x) for x in seleccionados]
+        
+        ole_all = df_ole_m0.filter(
+            pl.col("codigo_snies_del_programa").is_in(snies_codigos) &
             (pl.col("anno_corte") >= 2016)
         )
         
-        # 2. Aplicar Filtro T (Origen O Destino) para capturar Inbound/Outbound
-        if is_filtered(geo_sel):
-            geo_norm = [str(x).upper().replace(".", "").replace(",", "").replace("  ", " ").strip() for x in geo_sel]
-            cond_geo_t = (normalize_pl(pl.col(col_orig)).is_in(geo_norm)) | (normalize_pl(pl.col(col_dest)).is_in(geo_norm))
-            ole_all = df_base.filter(cond_geo_t)
-        else:
-            ole_all = df_base
-            geo_norm = []
-
         if len(ole_all) == 0: return pd.DataFrame()
         
-        # 3. Agregación por Año, Origen y Destino
+        # Agrupar por Año, Origen y Destino
         agg = ole_all.group_by(["anno_corte", col_orig, col_dest]).agg([
             pl.col("graduados_que_cotizan").sum().alias("cotizantes")
         ]).to_pandas()
         
-        def normalize_str(s):
-            return str(s).upper().replace(".", "").replace(",", "").replace("  ", " ").strip()
-            
+        # Limpieza para match
         agg["orig_clean"] = agg[col_orig].apply(normalize_str)
         agg["dest_clean"] = agg[col_dest].apply(normalize_str)
         
@@ -2549,24 +2395,20 @@ def server(input, output, session):
         for anno in sorted(agg["anno_corte"].unique()):
             df_yr = agg[agg["anno_corte"] == anno]
             
-            if not geo_norm:
-                # Caso Nacional: Se quedan vs Se van del municipio/depto de origen
-                total_grad_zona = df_yr["cotizantes"].sum()
+            if not sel_norm:
+                total_nac = df_yr["cotizantes"].sum()
                 se_quedan = df_yr[df_yr["orig_clean"] == df_yr["dest_clean"]]["cotizantes"].sum()
                 se_van = df_yr[df_yr["orig_clean"] != df_yr["dest_clean"]]["cotizantes"].sum()
-                llegan_de_fuera = se_van # En nacional Salen = Entran
+                llegan_de_fuera = se_van
             else:
-                # Caso Regional (Filtro T)
-                is_origen_sel = df_yr["orig_clean"].isin(geo_norm)
-                is_dest_sel = df_yr["dest_clean"].isin(geo_norm)
-                
-                total_grad_zona = df_yr[is_origen_sel]["cotizantes"].sum()
+                is_origen_sel = df_yr["orig_clean"].isin(sel_norm)
+                is_dest_sel = df_yr["dest_clean"].isin(sel_norm)
+                total_nac = df_yr[is_origen_sel]["cotizantes"].sum()
                 se_quedan = df_yr[is_origen_sel & is_dest_sel]["cotizantes"].sum()
                 se_van = df_yr[is_origen_sel & ~is_dest_sel]["cotizantes"].sum()
                 llegan_de_fuera = df_yr[~is_origen_sel & is_dest_sel]["cotizantes"].sum()
             
-            # Asegurar que todas las variables estén definidas antes de usarlas
-            retencion = se_quedan / total_grad_zona if total_grad_zona else 0
+            retencion = se_quedan / total_nac if total_nac else 0
             ratio = se_van / llegan_de_fuera if llegan_de_fuera else 0
             res.append({"anno_corte": anno, "retencion": retencion, "ratio": ratio})
             
@@ -2653,37 +2495,52 @@ def server(input, output, session):
         return ui.HTML(f"<div style='font-size: 48px; font-weight: bold; color: #31497e;'>{val}</div>")
 
     # --- SALARIO DE ENGANCHE ---
+    @reactive.calc
+    def filtered_ole_salario():
+        fs = filtered_snies()
+        snies_codigos = fs["codigo_snies_del_programa"].unique()
+        if len(snies_codigos) == 0:
+            return pl.DataFrame()
+            
+        df = df_ole_salario.filter(pl.col("codigo_snies_del_programa").is_in(snies_codigos))
+        
+        # Filtro geográfico (Origen)
+        f_vals = isolated_filters()
+        dept = f_vals["departamento"]
+        mpio = f_vals["municipio"]
+        if is_filtered(dept) or is_filtered(mpio):
+            # Obtenemos los códigos DIVIPOLA numéricos de los municipios/departamentos seleccionados
+            df_cob_geo = df_cobertura.filter(pl.col("codigo_snies_del_programa").is_in(snies_codigos))
+            if is_filtered(dept):
+                df_cob_geo = df_cob_geo.filter(pl.col("departamento_oferta").is_in(dept))
+            if is_filtered(mpio):
+                df_cob_geo = df_cob_geo.filter(pl.col("municipio_oferta").is_in(mpio))
+            
+            divis_num = df_cob_geo["divipola_mpio_oferta"].drop_nulls().unique()
+            # En OLE Salario cruzamos por divipola_mpio_principal (Int32)
+            df = df.filter(pl.col("divipola_mpio_principal").is_in(divis_num))
+            
+        return df
 
     @reactive.calc
     def calc_kpi_salario_dependientes_sum():
-        # Usamos la base de movilidad (m0) para que coincida exactamente con el Observatorio Laboral
-        fs = filtered_snies_ole()
-        snies_codigos = fs["codigo_snies_del_programa"].unique()
-        if len(snies_codigos) == 0: return "0"
-        
-        # Usar el año máximo global de la base OLE
-        ole_filtered = filtered_ole_m0().filter(
-            pl.col("codigo_snies_del_programa").is_in(snies_codigos) & 
-            (pl.col("anno_corte") == max_anno_ole)
-        )
-        
-        if len(ole_filtered) == 0: return "0"
-        total = ole_filtered["graduados_cotizantes_dependientes"].sum()
-        return format_num_es(total)
+        df = filtered_ole_salario()
+        if len(df) == 0: return "0"
+        max_yr = df["anno_corte"].max()
+        total = df.filter(pl.col("anno_corte") == max_yr)["graduados_cotizantes_dependientes"].sum()
+        return f"{total:,.0f}".replace(",", ".")
 
     @render.ui
     def kpi_salario_dependientes_sum():
         return ui.HTML(f"<div style='font-size: 48px; font-weight: bold; color: #31497e;'>{calc_kpi_salario_dependientes_sum()}</div>")
 
-
-
     def _calculate_salary_trend_data(is_constant=False):
-        fs = filtered_snies_ole()
+        fs = filtered_snies()
         snies_codigos = fs["codigo_snies_del_programa"].unique()
         if len(snies_codigos) == 0: return pd.DataFrame(columns=["anno_corte", "label", "salario_pesos"])
         
         # 1. Filtro base
-        df_base = filtered_ole_salario().filter(pl.col("codigo_snies_del_programa").is_in(snies_codigos))
+        df_base = df_ole_salario.filter(pl.col("codigo_snies_del_programa").is_in(snies_codigos))
         
         # 2. Filtro Geográfico
         f_vals = isolated_filters()
@@ -2702,7 +2559,7 @@ def server(input, output, session):
         df_base = df_base.join(df_smmlv_pl, on="anno_corte", how="inner")
         
         if is_constant:
-            max_data_year = filtered_ole_salario()["anno_corte"].max()
+            max_data_year = df_ole_salario["anno_corte"].max()
             smmlv_ref = df_smmlv_pl.filter(pl.col("anno_corte") == max_data_year)["smmlv"]
             if smmlv_ref.len() > 0:
                 latest_smmlv = smmlv_ref[0]
@@ -2910,7 +2767,7 @@ def server(input, output, session):
     def calc_kpi_salario_promedio_total():
         df_pd = get_salary_trend_data_constant()
         if df_pd.empty: return "$ 0"
-        max_yr = filtered_ole_salario()["anno_corte"].max()
+        max_yr = df_ole_salario["anno_corte"].max()
         val = df_pd[(df_pd["label"] == "TOTAL") & (df_pd["anno_corte"] == max_yr)]["salario_pesos"]
         s = val.iloc[0] if not val.empty else 0
         return f"$ {format_num_es(s)}"
@@ -2923,7 +2780,7 @@ def server(input, output, session):
     def calc_kpi_salario_promedio_fem():
         df_pd = get_salary_trend_data_constant()
         if df_pd.empty: return "$ 0"
-        max_yr = filtered_ole_salario()["anno_corte"].max()
+        max_yr = df_ole_salario["anno_corte"].max()
         val = df_pd[(df_pd["label"] == "FEMENINO") & (df_pd["anno_corte"] == max_yr)]["salario_pesos"]
         s = val.iloc[0] if not val.empty else 0
         return f"$ {format_num_es(s)}"
@@ -2936,7 +2793,7 @@ def server(input, output, session):
     def calc_kpi_salario_promedio_masc():
         df_pd = get_salary_trend_data_constant()
         if df_pd.empty: return "$ 0"
-        max_yr = filtered_ole_salario()["anno_corte"].max()
+        max_yr = df_ole_salario["anno_corte"].max()
         val = df_pd[(df_pd["label"] == "MASCULINO") & (df_pd["anno_corte"] == max_yr)]["salario_pesos"]
         s = val.iloc[0] if not val.empty else 0
         return f"$ {format_num_es(s)}"
@@ -3003,55 +2860,69 @@ def server(input, output, session):
     def plot_salario_dist_sexo():
         return ui.HTML(pio.to_html(calc_plot_salario_dist_sexo(), full_html=False, include_plotlyjs="cdn"))
 
-    @reactive.calc
     def get_ole_mobility_df():
         import pandas as pd
-        f_vals = isolated_filters()
-        dept_vals = list(f_vals["departamento"] or [])
-        mpio_vals = list(f_vals["municipio"] or [])
+        fs = filtered_snies()
+        snies_codigos = fs["codigo_snies_del_programa"].unique()
         
-        if is_filtered(mpio_vals):
+        if len(snies_codigos) == 0:
+            return pd.DataFrame(), "", "", ""
+            
+        # Nivel de agregación dinámico basado en filtros frontend
+        f_vals = isolated_filters()
+        mpio_filtro = f_vals["municipio"]
+        if hasattr(mpio_filtro, '__iter__') and len(mpio_filtro) > 0 and mpio_filtro[0]:
             col_origen = "municipio_origen"
             col_destino = "municipio_destino"
             label_ejes = "Municipio"
-            geo_sel = mpio_vals
         else:
             col_origen = "departamento_origen"
             col_destino = "departamento_destino"
             label_ejes = "Departamento"
-            geo_sel = dept_vals
-
-        # 1. Obtener el Perfil Nacional de SNIES (ignorando el filtro geográfico del sidebar)
-        fs = filtered_snies_no_geo()
-        snies_nat_codigos = fs["codigo_snies_del_programa"].unique()
-
-        # 2. Filtrar OLE con este perfil nacional
-        df = df_ole_m0.filter(
-            (pl.col("anno_corte") == max_anno_ole) &
-            (pl.col("codigo_snies_del_programa").is_in(snies_nat_codigos))
+            
+        max_anno_corte = df_ole_m0["anno_corte"].max()
+        ole_base = df_ole_m0.filter(
+            pl.col("codigo_snies_del_programa").is_in(snies_codigos) & 
+            (pl.col("anno_corte") == max_anno_corte)
         )
-
+        
+        # Filtro estricto de matriz geospacial: Si el usuario selecciona Deptos o Mpios,
+        # obligamos que la ruta de movilidad toque esa selección temporalmente o permanentemente (Origen O Destino).
+        dept_vals = list(f_vals["departamento"] or [])
+        mpio_vals = list(mpio_filtro or [])
+        
         def normalize_pl(col):
+            # Eliminar puntos, comas y espacios dobles para match robusto
             return col.str.to_uppercase().str.replace_all(r"[\.,]", "").str.replace_all(r"\s+", " ").str.strip_chars()
 
-        # 3. Aplicar Filtro T para la visualización regional
-        if is_filtered(geo_sel):
-            geo_norm = [str(x).upper().replace(".", "").replace(",", "").replace("  ", " ").strip() for x in geo_sel]
-            cond_geo_t = (normalize_pl(pl.col(col_origen)).is_in(geo_norm)) | (normalize_pl(pl.col(col_destino)).is_in(geo_norm))
-            ole_filtered = df.filter(cond_geo_t)
+        if label_ejes == "Municipio" and len(mpio_vals) > 0:
+            mpio_norm = [str(x).upper().replace(".", "").replace(",", "").replace("  ", " ").strip() for x in mpio_vals]
+
+            df_origen = ole_base.filter(normalize_pl(pl.col("municipio_origen")).is_in(mpio_norm))
+            df_destino = ole_base.filter(normalize_pl(pl.col("municipio_destino")).is_in(mpio_norm))
+
+            ole_filtered = pl.concat([df_origen, df_destino]).unique()
+            
+        elif label_ejes == "Departamento" and len(dept_vals) > 0:
+            dept_norm = [str(x).upper().replace(".", "").replace(",", "").replace("  ", " ").strip() for x in dept_vals]
+
+            df_origen = ole_base.filter(normalize_pl(pl.col("departamento_origen")).is_in(dept_norm))
+            df_destino = ole_base.filter(normalize_pl(pl.col("departamento_destino")).is_in(dept_norm))
+
+            ole_filtered = pl.concat([df_origen, df_destino]).unique()
         else:
-            ole_filtered = df
+            ole_filtered = ole_base
 
         if len(ole_filtered) == 0:
-            return pd.DataFrame(), col_origen, col_destino, label_ejes
+            return pd.DataFrame(), "", "", ""
             
-        df_agg = ole_filtered.group_by([col_origen, col_destino]).agg(
+        # Acumular volumen de estudiantes en la matriz de cruce usando datos absolutos
+        agg_df = ole_filtered.group_by([col_origen, col_destino]).agg([
             pl.col("graduados").sum().alias("volumen"),
             pl.col("graduados_que_cotizan").sum().alias("cotizantes")
-        ).to_pandas()
-        
-        df_agg = df_agg.sort_values("cotizantes", ascending=False)
-        return df_agg, col_origen, col_destino, label_ejes
+        ])
+        agg_df = agg_df.filter(pl.col("cotizantes") > 0).sort("cotizantes", descending=True)
+        return agg_df.to_pandas(), col_origen, col_destino, label_ejes
 
     @reactive.calc
     def calc_plot_mobility_matrix():
@@ -3880,7 +3751,6 @@ def server(input, output, session):
             return ui.HTML("<i style='color: gray;'>Seleccione un programa de la lista superior para ver sus atributos.</i>")
             
         items = [
-            f"<b>Programa (SNIES):</b> {attr['codigo']} - {attr['nombre']}",
             f"<b>Institución:</b> {attr['institucion']}",
             f"<b>Nivel:</b> {attr['nivel_de_formacion']}" if attr.get('nivel_de_formacion') else "",
             f"<b>Modalidad:</b> {attr['modalidad']}" if attr.get('modalidad') else "",
@@ -4259,7 +4129,7 @@ def server(input, output, session):
         if not attr: 
             return pd.DataFrame(), pd.DataFrame()
             
-        # 1. SERIE BASE (Usamos la data completa para asegurar que el programa base siempre aparezca)
+        # 1. SERIE BASE
         df_base_filtered = df_ole_m0.filter(pl.col("codigo_snies_del_programa") == attr["codigo"])
         df_base_agg = df_base_filtered.group_by("anno_corte").agg([
             pl.col(num_col).sum().alias("num"),
@@ -4268,22 +4138,20 @@ def server(input, output, session):
         
         df_base_pd = df_base_agg.with_columns((pl.col("num") / pl.col("den")).alias("valor_base")).to_pandas()
         
-        # 2. SERIE COMPARABLE (Benchmark Nacional)
+        # 2. SERIE COMPARABLE
         comp_codigos = comparable_snies_codigos()
         if len(comp_codigos) == 0:
             return df_base_pd, pd.DataFrame()
             
-        # Para el benchmark usamos la data sin el filtro del sidebar para tener un promedio nacional real
         df_comp_filtered = df_ole_m0.filter(pl.col("codigo_snies_del_programa").is_in(comp_codigos))
         
-        # Para el grupo comparable, calculamos el ratio de las sumas (Weighted Average)
         df_comp_prog = df_comp_filtered.group_by(["anno_corte", "codigo_snies_del_programa"]).agg([
             pl.col(num_col).sum().alias("num"),
             pl.col(den_col).sum().alias("den")
         ]).filter(pl.col("den") > 0).with_columns((pl.col("num") / pl.col("den")).alias("tasa"))
         
         df_comp_agg = df_comp_prog.group_by("anno_corte").agg([
-            (pl.col("num").sum() / pl.col("den").sum()).alias("valor_comp_mean"), # Ratio de sumas
+            pl.col("tasa").mean().alias("valor_comp_mean"),
             pl.col("tasa").std().alias("valor_comp_std"),
             pl.col("tasa").count().alias("n_programas")
         ]).sort("anno_corte")
@@ -4445,10 +4313,11 @@ def server(input, output, session):
             col_d = "departamento_destino"
             label = "Departamento"
             
-        # Usar base nacional para el programa de referencia (ignorar filtro geográfico del sidebar)
+        max_anno = df_ole_m0["anno_corte"].max()
+        # Filtro estricto para el programa base
         df_base = df_ole_m0.filter(
             (pl.col("codigo_snies_del_programa") == snies_base) & 
-            (pl.col("anno_corte") == max_anno_ole)
+            (pl.col("anno_corte") == max_anno)
         ).to_pandas()
         
         if df_base.empty:
@@ -4484,15 +4353,13 @@ def server(input, output, session):
 
     @render.ui
     def comp_dist_empleabilidad_header():
-        max_yr = filtered_ole_m0()["anno_corte"].max()
-        if max_yr is None: return ui.HTML("Distribución de <b style='color: #31497e;'>Tasa de Empleabilidad</b> (Sin datos)")
+        max_yr = df_ole_m0["anno_corte"].max()
         return ui.HTML(f"Distribución de <b style='color: #31497e;'>Tasa de Empleabilidad</b> ({max_yr})")
 
     @reactive.calc
     def get_comp_ole_dist_empleabilidad():
         import pandas as pd
-        max_anno_corte = max_anno_ole
-        if max_anno_corte is None: return pd.DataFrame()
+        max_anno_corte = df_ole_m0["anno_corte"].max()
         
         attr = comp_profile_attr()
         df_total = pd.DataFrame()
@@ -4500,9 +4367,9 @@ def server(input, output, session):
             nivel = attr["nivel_de_formacion"]
             valid_snies_nivel = df_snies.filter((pl.col("nivel_de_formacion") == nivel) & (pl.col("estado_programa") == "ACTIVO"))["codigo_snies_del_programa"].unique()
             
-            ole_nivel = filtered_ole_m0().filter(
+            ole_nivel = df_ole_m0.filter(
                 pl.col("codigo_snies_del_programa").is_in(valid_snies_nivel) & 
-                (pl.col("anno_corte") == max_anno_ole)
+                (pl.col("anno_corte") == max_anno_corte)
             )
             
             if len(ole_nivel) > 0:
@@ -4516,14 +4383,12 @@ def server(input, output, session):
         comp_codigos = comparable_snies_codigos()
         df_comp = pd.DataFrame()
         if len(comp_codigos) > 0:
-            # Usar el año máximo global de la base OLE
-            ole_base_comp = filtered_ole_m0().filter(
+            ole_comp = df_ole_m0.filter(
                 pl.col("codigo_snies_del_programa").is_in(comp_codigos) & 
-                (pl.col("anno_corte") == max_anno_ole)
+                (pl.col("anno_corte") == max_anno_corte)
             )
-            
-            if len(ole_base_comp) > 0:
-                agg_comp = ole_base_comp.group_by(["codigo_snies_del_programa"]).agg([
+            if len(ole_comp) > 0:
+                agg_comp = ole_comp.group_by(["codigo_snies_del_programa"]).agg([
                     pl.col("graduados_que_cotizan").sum().alias("num"),
                     pl.col("graduados").sum().alias("den")
                 ]).filter(pl.col("den") > 0).with_columns((pl.col("num") / pl.col("den")).alias("tasa"))
@@ -4581,7 +4446,7 @@ def server(input, output, session):
 
     @render.ui
     def comp_salario_evolucion_header():
-        max_yr = filtered_ole_salario()["anno_corte"].max()
+        max_yr = df_ole_salario["anno_corte"].max()
         return ui.HTML(f"Evolución del <b style='color: #31497e;'>Salario Promedio Estimado</b> (Pesos Ctes. {max_yr})")
 
     @reactive.calc
@@ -4603,7 +4468,6 @@ def server(input, output, session):
         if len(comp_codigos) == 0:
             df_comp = pd.DataFrame()
         else:
-            # Para el benchmark usamos la data sin el filtro del sidebar para tener un promedio nacional real
             df_comp = df_ole_salario.filter(pl.col("codigo_snies_del_programa").is_in(comp_codigos))
             
         def process_salary_df(df_in):
@@ -4611,7 +4475,7 @@ def server(input, output, session):
             d = df_in.join(df_smmlv_pl, on="anno_corte", how="inner")
             
             # Pesos constantes basados en el último año de datos salariales reales
-            max_data_year = filtered_ole_salario()["anno_corte"].max()
+            max_data_year = df_ole_salario["anno_corte"].max()
             smmlv_ref = df_smmlv_pl.filter(pl.col("anno_corte") == max_data_year)["smmlv"]
             if smmlv_ref.len() > 0:
                 latest_smmlv = smmlv_ref[0]
@@ -4668,7 +4532,7 @@ def server(input, output, session):
         df_comp = pd.DataFrame()
         
         if attr:
-            base_pl = filtered_ole_salario().filter(pl.col("codigo_snies_del_programa") == attr["codigo"])
+            base_pl = df_ole_salario.filter(pl.col("codigo_snies_del_programa") == attr["codigo"])
             if len(base_pl) > 0:
                 max_yr = base_pl["anno_corte"].max()
                 agg_base = base_pl.filter(pl.col("anno_corte") == max_yr).group_by("rango_salario").agg(
@@ -4681,7 +4545,7 @@ def server(input, output, session):
                 
         comp_codigos = comparable_snies_codigos()
         if len(comp_codigos) > 0:
-            comp_pl = filtered_ole_salario().filter(pl.col("codigo_snies_del_programa").is_in(comp_codigos))
+            comp_pl = df_ole_salario.filter(pl.col("codigo_snies_del_programa").is_in(comp_codigos))
             if len(comp_pl) > 0:
                 max_yr_comp = comp_pl["anno_corte"].max()
                 agg_comp = comp_pl.filter(pl.col("anno_corte") == max_yr_comp).group_by("rango_salario").agg(
@@ -5587,9 +5451,7 @@ def server(input, output, session):
         if not attr: return None, None, "Departamento"
         
         snies_base = attr["codigo"]
-        # Usar el año máximo global de la base OLE
-        max_anno_corte = max_anno_ole
-        if max_anno_corte is None: return None, None, "Departamento"
+        max_anno_corte = df_ole_m0["anno_corte"].max()
         
         # Determinar si usamos Depto o Mpio según filtros globales
         f_vals = isolated_filters()
@@ -5603,10 +5465,9 @@ def server(input, output, session):
             col_dest = "departamento_destino"
             label = "Departamento"
 
-        # Usar base nacional para el programa de referencia (ignorar filtro geográfico del sidebar)
         df_base = df_ole_m0.filter(
             (pl.col("codigo_snies_del_programa") == snies_base) & 
-            (pl.col("anno_corte") == max_anno_ole)
+            (pl.col("anno_corte") == max_anno_corte)
         )
         
         if len(df_base) == 0: return None, None, label
@@ -6055,28 +5916,11 @@ def server(input, output, session):
         inst_name = ", ".join(inst_sel) if inst_sel else "Todas"
         filtros_desc = desc_alcance
         
-        # SNIES Data con fallbacks de seguridad
-        try:
-            snies_y = str(int(df_matricula["anno"].max() or max_anno_snies or 2023))
-        except:
-            snies_y = "2023"
-            
-        try:
-            # Intentar obtener el año máximo filtrado, si no, usar el máximo global
-            ole_max_filtered = filtered_ole_m0()["anno_corte"].max()
-            ole_y = str(int(ole_max_filtered or max_anno_ole or 2022))
-        except:
-            ole_y = "2022"
-            
-        try:
-            spadies_y = str(int(df_desercion["anno"].max() if "anno" in df_desercion.columns else max_anno_desercion or 2023))
-        except:
-            spadies_y = "2023"
-            
-        try:
-            icfes_y = str(int(df_saber["anno"].max() if "anno" in df_saber.columns else max_anno_saber or 2024))
-        except:
-            icfes_y = "2024"
+        # SNIES Data
+        snies_y = str(int(df_matricula["anno"].max()))
+        ole_y = str(int(df_ole_m0["anno_corte"].max()))
+        spadies_y = str(int(df_desercion["anno"].max() if "anno" in df_desercion.columns else 2023))
+        icfes_y = str(int(df_saber["anno"].max() if "anno" in df_saber.columns else 2024))
 
         # Cargar Logo en Base64
         logo_b64 = ""
@@ -6122,9 +5966,6 @@ def server(input, output, session):
             "pcurso": safe_kpi(calc_total_primer_curso),
             "matriculados": safe_kpi(calc_total_matriculados),
             "graduados": safe_kpi(calc_total_graduados),
-            "ole_graduados": safe_kpi(lambda: format_num_es(calc_ole_base_data()["graduados"][0] if calc_ole_base_data() else 0)),
-            "ole_cotizan": safe_kpi(lambda: format_num_es(calc_ole_base_data()["que_cotizan"][0] if calc_ole_base_data() else 0)),
-            "ole_dependientes": safe_kpi(lambda: format_num_es(calc_ole_base_data()["dependientes"][0] if calc_ole_base_data() else 0)),
             "vinculacion": safe_kpi(calc_kpi_empleabilidad),
             "salario": safe_kpi(calc_kpi_salario_promedio_total), 
             "retencion": safe_kpi(calc_kpi_retencion),
@@ -6551,7 +6392,7 @@ def server(input, output, session):
             "area_de_conocimiento": "Misma Área",
             "nucleo_basico_del_conocimiento": "Mismo NBC"
         }
-        filtros_activos = [f"Programa Base (SNIES {attr['codigo']})"] + [filtros_labels.get(f, f) for f in input.comp_criterios()]
+        filtros_activos = [filtros_labels.get(f, f) for f in input.comp_criterios()]
 
         def safe_val(val, format_fn=str, default="Sin dato"):
             if val is None: return default
@@ -6812,7 +6653,7 @@ def server(input, output, session):
                 
                 # 2. OLE
                 try:
-                    df2 = filtered_ole_m0().filter(pl.col("codigo_snies_del_programa").is_in(snies_list)).to_pandas()
+                    df2 = df_ole_m0.filter(pl.col("codigo_snies_del_programa").is_in(snies_list)).to_pandas()
                     df2 = clean_tz(df2)
                     df2.to_excel(writer, sheet_name="OLE", index=False)
                 except Exception as e: print("Error OLE export:", e)
